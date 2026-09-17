@@ -48,15 +48,15 @@ Este documento refina las 8 historias de usuario de `BACKLOG.md`, siguiendo la e
 
 | Actividad | Estado |
 |---|---|
-| `Dockerfile` `orders-service` (multi-stage, distroless, non-root) | ✅ Hecho |
-| `Dockerfile` `reception-service` (multi-stage, distroless, non-root) | ✅ Hecho |
-| `.dockerignore` en ambos servicios | ✅ Hecho |
-| `docker-compose.yml` unificado en raíz (5 servicios) | ✅ Hecho |
-| `pgAdmin` como servicio opcional (Compose `profiles`) | ✅ Hecho |
-| Reubicación de composes parciales originales a `eliminados/` (evidencia, no borrado) | ✅ Hecho |
-| Validación end-to-end real (Postman + consulta directa a Postgres) | ✅ Hecho |
-| `README.md`: sección "Ejecución Local" y "Herramientas Opcionales" | ✅ Hecho |
-| `README.md`: diagrama de arquitectura corregido | ⏳ Pendiente (se hace al cierre, junto con el resto de documentación) |
+| `Dockerfile` `orders-service` (multi-stage, distroless, non-root) | Hecho |
+| `Dockerfile` `reception-service` (multi-stage, distroless, non-root) | Hecho |
+| `.dockerignore` en ambos servicios | Hecho |
+| `docker-compose.yml` unificado en raíz (5 servicios) | Hecho |
+| `pgAdmin` como servicio opcional (Compose `profiles`) | Hecho |
+| Reubicación de composes parciales originales a `eliminados/` (evidencia, no borrado) | Hecho |
+| Validación end-to-end real (Postman + consulta directa a Postgres) | Hecho |
+| `README.md`: sección "Ejecución Local" y "Herramientas Opcionales" | Hecho |
+| `README.md`: diagrama de arquitectura corregido | Pendiente (se hace al cierre, junto con el resto de documentación) |
 
 ### 4. Estimación
 
