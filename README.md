@@ -111,6 +111,29 @@ La solución deberá poder ejecutarse localmente utilizando:
 ```bash
 docker compose up
 ```
+Esto levanta los 5 componentes core de la plataforma: `orders-service`, `reception-service`, `rabbitmq`, `redis` y `postgres`.
+
+---
+
+# Herramientas Opcionales
+
+## pgAdmin
+
+Interfaz web para administrar/inspeccionar la base de datos Postgres de `reception-service`. No se levanta con `docker compose up` por defecto (queda fuera del perfil activo), ya que es una herramienta de conveniencia para desarrollo, no un componente core de la plataforma.
+
+Si un desarrollador la necesita, la levanta explícitamente por nombre:
+```bash
+docker compose up -d pgadmin
+```
+
+|Variable|Valor por defecto|
+|---|---|
+|URL|http://localhost:5050|
+|Usuario|admin@admin.com|
+|Contraseña|admin|
+
+Para conectarse a Postgres desde pgAdmin, usar como host `postgres` (nombre del servicio en la red interna de Docker Compose), puerto `5432`.
+
 ---
 
 # Kubernetes

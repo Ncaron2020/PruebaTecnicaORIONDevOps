@@ -1,0 +1,117 @@
+# docker-compose.yml unificado
+#
+# Reemplaza a los dos composes parciales originales:
+#   - orders-service/docker-compose.yaml (rabbitmq + redis)
+#   - reception-service/test/docker-compose.yml (postgres + pgadmin, rabbitmq comentado)
+#
+# Motivo: cada servicio se desarrolló de forma aislada, lo que generaba
+# RabbitMQ duplicado y en conflicto de puertos entre ambos composes.
+# Aquí queda un único RabbitMQ compartido, referenciado por ambos servicios
+# a través del hostname interno de Docker ("rabbitmq"), no "localhost".
+#
+# Los archivos originales se conservaron en /eliminados como evidencia,
+# no se eliminaron del repositorio.
+
+services:
+  orders-service:
+    build:
+      context: ./orders-service
+    container_name: orders-service
+    ports:
+      - "8080:8080"
+    environment:
+      SERVER_PORT: "8080"
+      RABBITMQ_URL: "amqp://guest:guest@rabbitmq:5672/"
+      RABBITMQ_QUEUE: "events_queue"
+      REDIS_ADDR: "redis:6379"
+      REDIS_PASSWORD: ""
+      REDIS_LIST_KEY: "events_list"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  reception-service:
+    build:
+      context: ./reception-service/test
+    container_name: reception-service
+    ports:
+      - "8081:8080"
+    environment:
+      DB_HOST: "postgres"
+      DB_PORT: "5432"
+      DB_NAME: "resception_test"
+      DB_USER: "postgres"
+      DB_PASSWORD: "postgres"
+      RABBITMQ_HOST: "rabbitmq"
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USERNAME: "guest"
+      RABBITMQ_PASSWORD: "guest"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: postgres:16.8
+    container_name: postgres
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: resception_test
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Herramienta opcional de administración de Postgres.
+  # No se levanta con "docker compose up" por defecto (queda fuera del
+  # perfil activo por defecto); solo se inicia si se invoca explícitamente
+  # por nombre. Ver README.md, sección "Herramientas Opcionales".
+  pgadmin:
+    image: dpage/pgadmin4:8.11
+    container_name: pgadmin
+    profiles: ["tools"]
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    depends_on:
+      - postgres
+
+volumes:
+  postgres_data:
