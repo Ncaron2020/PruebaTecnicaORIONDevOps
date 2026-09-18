@@ -331,6 +331,10 @@ S (documentación) – L (implementación completa)
 - **Imágenes `distroless` + usuario no-root** en ambos servicios: postura de seguridad consistente entre `orders-service` y `reception-service`, no solo en uno de los dos.
 - **GitHub Flow (sin rama `develop`)**: no existe necesidad real de múltiples ambientes de integración en el alcance de esta prueba; se prioriza un flujo simple (`feature → Pull Request → main`) sobre replicar Git Flow sin una razón concreta que lo justifique.
 
+### Convención de mensajes de commit
+
+Los primeros commits de la rama `feature/hu-001-containerization` usan un formato de etiqueta libre (`[Categoría]: descripción`, en algunos casos con la HU referenciada aparte, en otros no). A partir de `feature/hu-002-ci-cd` se adoptó el estándar `[HU-XXX-Categoría]: descripción`, para que la trazabilidad entre cada commit y su historia de usuario correspondiente quede explícita y consistente de cara a las historias venideras. No se reescribió el historial de los commits ya realizados para preservar su integridad; el ajuste aplica desde este punto en adelante.
+
 ### Qué riesgos se identificaron
 
 - Inconsistencias en la documentación original del repositorio (diagrama de arquitectura incompleto, referencia a una carpeta `orders-worker` inexistente, carpeta `reception-service/test/` mal nombrada).
