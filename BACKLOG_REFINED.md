@@ -220,6 +220,18 @@ Con el `startupProbe` ya corregido y los 5 pods (`orders-service`, `reception-se
 
 Confirma que el comportamiento del sistema en Kubernetes es idéntico al validado en local con `docker-compose.yml` — la migración de plataforma no introdujo ninguna regresión funcional.
 
+### 10. Cierre de pendientes de MVP: `replicaCount` y `values.yaml` por ambiente
+
+Al revisar la historia contra su propio plan (sección 2 y 3), quedaron 2 puntos del MVP sin cerrar tras el despliegue inicial:
+
+- **`replicaCount >= 2`**: `orders-service` y `reception-service` quedaron con `replicaCount: 1` en la primera versión. Se corrigió a `2` en el `values.yaml` base de ambos — validado desplegando de verdad (no solo revisando el YAML): los 4 pods (2+2) quedaron `1/1 Running` sin problemas de recursos en el nodo único de `kind`.
+- **`values.yaml` parametrizado por ambiente**: se agregó `values-dev.yaml` en `orders-service` y `reception-service`, con `replicaCount: 1` y recursos más livianos para entornos locales/de un solo nodo (uso: `helm install ... -f values.yaml -f values-dev.yaml`, Helm aplica los archivos en orden y el último gana). El `values.yaml` base queda con la configuración apropiada para producción (`replicaCount: 2`). Validado con `helm template` comparando el renderizado con y sin el override — confirma `replicas: 2` sin override y `replicas: 1` con `values-dev.yaml`.
+- **Nota sobre `reception-service/values-dev.yaml`**: el límite de memoria en el override de desarrollo **no** se redujo tan agresivamente como en los demás — es el mismo worker analizado en `RCA.md`, donde `128Mi` causaba `OOMKilled` en bucle. Incluso en un ambiente "liviano", se mantiene bien por encima de ese valor problemático.
+
+De paso, se dejó explícita la estrategia `RollingUpdate` (con `maxUnavailable: 0`, `maxSurge: 1`) en ambos `Deployment` — ya era el comportamiento por defecto de Kubernetes, pero quedaba implícito; con `replicaCount: 2` ahora sí tiene un efecto visible (garantiza cero downtime real en cada actualización).
+
+Con esto, los 2 pendientes de MVP quedan cerrados — HU-003 queda completa en su alcance obligatorio.
+
 ---
 
 ## HU-004 — Configuración y Gestión Segura
