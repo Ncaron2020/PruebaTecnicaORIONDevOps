@@ -79,9 +79,12 @@ Dockerfile por servicio: S cada uno · Compose unificado: M · Validación end-t
 - Pipeline lento si no se cachean dependencias (`go mod`, dependencias de Gradle) entre corridas.
 - No hay clúster de Kubernetes real accesible para el candidato — el deploy automatizado dentro del pipeline no puede validarse contra un entorno productivo real.
 
-**Ambigüedades:** el README sugiere GitHub Actions **o** GitLab CI/CD, sin definir cuál usar.
+**Ambigüedades:**
+- El README no es consistente respecto a la herramienta de CI/CD: en "Tecnologías" ofrece GitHub Actions y GitLab CI/CD como opciones equivalentes, y en "Herramientas y Libertad Tecnológica" deja explícito que la elección es libre siempre que se justifique — pero en la sección "Evaluación" el bullet dice literalmente `GitLab CI/CD`, sin mencionar GitHub Actions. Mismo patrón de inconsistencia de documentación que el de `orders-worker` (HU-001).
 
-**Supuestos:** se usa **GitHub Actions**, porque el fork ya vive en GitHub y permite usar `GITHUB_TOKEN` automático para autenticar contra GHCR sin gestionar credenciales adicionales.
+**Supuestos y decisión tomada:**
+- Se usa **GitHub Actions** como pipeline principal, funcional y demostrable: el fork ya vive en GitHub, permite usar `GITHUB_TOKEN` automático para autenticar contra GHCR, sin gestionar credenciales adicionales ni infraestructura extra.
+- Adicionalmente, se entrega un **`gitlab-ci.yml` equivalente** por completitud frente a la mención explícita en "Evaluación", replicando la misma lógica de jobs (build, test, build de imagen, scan, push). Se documenta honestamente que **no pudo validarse en ejecución real**, al no contar con un repositorio GitLab con runners disponibles para esta prueba — su corrección se basa en la sintaxis y estructura equivalente al workflow de GitHub Actions, que sí está probado y funcionando.
 
 ### 2. Refinamiento
 
@@ -327,6 +330,10 @@ S (documentación) – L (implementación completa)
 - **GHCR** como registry para el pipeline de esta prueba (sin infraestructura que levantar). Para un entorno on-premise real se recomienda **Docker Registry self-hosted**, por simplicidad operativa y por ser la herramienta con la que el equipo tiene mayor familiaridad — compensando la falta de escaneo de vulnerabilidades integrado (que sí tiene Harbor) con Trivy corriendo como paso independiente en el pipeline.
 - **Imágenes `distroless` + usuario no-root** en ambos servicios: postura de seguridad consistente entre `orders-service` y `reception-service`, no solo en uno de los dos.
 - **GitHub Flow (sin rama `develop`)**: no existe necesidad real de múltiples ambientes de integración en el alcance de esta prueba; se prioriza un flujo simple (`feature → Pull Request → main`) sobre replicar Git Flow sin una razón concreta que lo justifique.
+
+### Convención de mensajes de commit
+
+Los primeros commits de la rama `feature/hu-001-containerization` usan un formato de etiqueta libre (`[Categoría]: descripción`, en algunos casos con la HU referenciada aparte, en otros no). A partir de `feature/hu-002-ci-cd` se adoptó el estándar `[HU-XXX-Categoría]: descripción`, para que la trazabilidad entre cada commit y su historia de usuario correspondiente quede explícita y consistente de cara a las historias venideras. No se reescribió el historial de los commits ya realizados para preservar su integridad; el ajuste aplica desde este punto en adelante.
 
 ### Qué riesgos se identificaron
 
