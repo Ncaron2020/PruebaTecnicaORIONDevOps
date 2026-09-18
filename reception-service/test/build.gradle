@@ -42,12 +42,18 @@ dependencies {
 // BOM - el bloque nativo de Gradle "constraints {}" NO tiene precedencia
 // sobre ese BOM (primer intento de fix que no funcio, confirmado por Trivy
 // en el pipeline). La forma correcta de overridear una version gestionada
-// por este plugin es su propia DSL "dependencyManagement":
+// por este plugin es su propia DSL "dependencyManagement". 10.1.55 (segundo
+// intento) resolvio 3 de las 6 CVEs; las 3 restantes (CVE-2026-65182,
+// CVE-2026-65905, CVE-2026-68525) pedian 10.1.58 segun Trivy, pero esa
+// version nunca se publico en Maven Central (verificado directo en
+// repo1.maven.org - salta de 10.1.57 a 10.1.59). Se usa 10.1.60, la
+// ultima version real disponible en la misma rama, validada localmente
+// antes de pushear:
 dependencyManagement {
 	dependencies {
-		dependency 'org.apache.tomcat.embed:tomcat-embed-core:10.1.55'
-		dependency 'org.apache.tomcat.embed:tomcat-embed-el:10.1.55'
-		dependency 'org.apache.tomcat.embed:tomcat-embed-websocket:10.1.55'
+		dependency 'org.apache.tomcat.embed:tomcat-embed-core:10.1.60'
+		dependency 'org.apache.tomcat.embed:tomcat-embed-el:10.1.60'
+		dependency 'org.apache.tomcat.embed:tomcat-embed-websocket:10.1.60'
 	}
 }
 
