@@ -79,9 +79,12 @@ Dockerfile por servicio: S cada uno · Compose unificado: M · Validación end-t
 - Pipeline lento si no se cachean dependencias (`go mod`, dependencias de Gradle) entre corridas.
 - No hay clúster de Kubernetes real accesible para el candidato — el deploy automatizado dentro del pipeline no puede validarse contra un entorno productivo real.
 
-**Ambigüedades:** el README sugiere GitHub Actions **o** GitLab CI/CD, sin definir cuál usar.
+**Ambigüedades:**
+- El README no es consistente respecto a la herramienta de CI/CD: en "Tecnologías" ofrece GitHub Actions y GitLab CI/CD como opciones equivalentes, y en "Herramientas y Libertad Tecnológica" deja explícito que la elección es libre siempre que se justifique — pero en la sección "Evaluación" el bullet dice literalmente `GitLab CI/CD`, sin mencionar GitHub Actions. Mismo patrón de inconsistencia de documentación que el de `orders-worker` (HU-001).
 
-**Supuestos:** se usa **GitHub Actions**, porque el fork ya vive en GitHub y permite usar `GITHUB_TOKEN` automático para autenticar contra GHCR sin gestionar credenciales adicionales.
+**Supuestos y decisión tomada:**
+- Se usa **GitHub Actions** como pipeline principal, funcional y demostrable: el fork ya vive en GitHub, permite usar `GITHUB_TOKEN` automático para autenticar contra GHCR, sin gestionar credenciales adicionales ni infraestructura extra.
+- Adicionalmente, se entrega un **`gitlab-ci.yml` equivalente** por completitud frente a la mención explícita en "Evaluación", replicando la misma lógica de jobs (build, test, build de imagen, scan, push). Se documenta honestamente que **no pudo validarse en ejecución real**, al no contar con un repositorio GitLab con runners disponibles para esta prueba — su corrección se basa en la sintaxis y estructura equivalente al workflow de GitHub Actions, que sí está probado y funcionando.
 
 ### 2. Refinamiento
 
