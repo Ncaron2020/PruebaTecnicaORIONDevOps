@@ -1,0 +1,17 @@
+# Override para entornos locales/desarrollo (ej. kind en una laptop).
+# Uso: helm install reception-service ./charts/reception-service -f charts/reception-service/values.yaml -f charts/reception-service/values-dev.yaml
+#
+# El limite de memoria NO se reduce tan agresivamente como en otros charts:
+# este es el mismo worker analizado en RCA.md, donde 128Mi causaba
+# OOMKilled en bucle. Incluso en un override "liviano" de desarrollo, se
+# mantiene bien por encima de ese valor problematico - la leccion del RCA
+# aplica sin importar el ambiente.
+replicaCount: 1
+
+resources:
+  requests:
+    memory: "192Mi"
+    cpu: "50m"
+  limits:
+    memory: "384Mi"
+    cpu: "250m"

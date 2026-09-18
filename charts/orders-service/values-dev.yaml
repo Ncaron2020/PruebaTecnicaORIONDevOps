@@ -1,0 +1,13 @@
+# Override para entornos locales/desarrollo (ej. kind en una laptop).
+# Uso: helm install orders-service ./charts/orders-service -f charts/orders-service/values.yaml -f charts/orders-service/values-dev.yaml
+# Helm aplica los archivos en orden, el ultimo gana - solo se listan aqui
+# las claves que difieren del values.yaml base (produccion).
+replicaCount: 1
+
+resources:
+  requests:
+    memory: "32Mi"
+    cpu: "25m"
+  limits:
+    memory: "64Mi"
+    cpu: "125m"
