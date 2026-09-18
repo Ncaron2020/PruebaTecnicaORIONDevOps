@@ -1,0 +1,165 @@
+# Pipeline equivalente a .github/workflows/ci-cd.yml, entregado por completitud
+# frente a la mencion explicita de "GitLab CI/CD" en la seccion "Evaluacion"
+# del README. No se pudo validar en ejecucion real (no hay repositorio GitLab
+# con runners disponible para esta prueba) - su correccion se basa en la logica
+# ya probada del pipeline de GitHub Actions. Ver BACKLOG_REFINED.md, HU-002.
+#
+# A diferencia de GitHub Actions, aqui SI se usa "rules: changes" nativo para
+# saltar jobs cuando no hay cambios en el modulo correspondiente (Go o Java) -
+# en GitHub Actions se decidio no implementar el equivalente porque requeriria
+# una accion de terceros y complejidad adicional injustificada para el alcance.
+#
+# Sobre los jobs de "build": estan escritos pensando en el maximo de
+# portabilidad posible, ya que no contamos con infraestructura de runners
+# propia y definida para esta prueba. Por eso usan "image: docker:27" +
+# "services: docker:27-dind" (Docker-in-Docker) y no declaran "tags:" -
+# asi corren en cualquier runner compartido generico con ejecutor Docker,
+# sin depender de infraestructura preconfigurada especifica.
+#
+# Si en cambio existiera infraestructura propia definida (runners self-hosted
+# ya registrados, con Docker instalado directamente en el host - como es
+# comun en ambientes on-premise reales), el enfoque recomendado seria distinto
+# y mas simple: usar un runner de ejecutor "shell" con Docker ya disponible
+# en el host, enrutando el job con "tags:" al runner especifico deseado, y
+# eliminar por completo el servicio "docker:27-dind" (el job hablaria
+# directo con el Docker del host, sin necesidad del daemon auxiliar). Esto
+# tambien evita que el servicio dind corra en modo "privileged", reduciendo
+# la superficie de riesgo del job.
+
+# Sin este bloque, GitLab crea un pipeline por cada push a CUALQUIER rama
+# Y otro adicional por cada Merge Request - duplicando la ejecucion del mismo
+# commit. Esto restringe la creacion de pipelines a solo dos casos, el
+# equivalente exacto a "on: pull_request" + "on: push: branches: [main]"
+# de ci-cd.yml (GitHub Actions):
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH == "main"'
+
+stages:
+  - test
+  - build
+
+variables:
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD: postgres
+  POSTGRES_DB: resception_test
+  RABBITMQ_DEFAULT_USER: guest
+  RABBITMQ_DEFAULT_PASS: guest
+
+# ---------------- STAGE: test ----------------
+
+test-orders-service:
+  stage: test
+  image: golang:1.26.8-alpine
+  rules:
+    - changes:
+        - orders-service/**/*
+  script:
+    - cd orders-service
+    - go vet ./...
+    - go test ./...
+
+test-reception-service:
+  stage: test
+  image: eclipse-temurin:17-jdk-alpine
+  rules:
+    - changes:
+        - reception-service/**/*
+  # reception-service usa @SpringBootTest: necesita Postgres y RabbitMQ reales
+  # disponibles durante el test, igual que en docker-compose.yml y en
+  # ci-cd.yml (GitHub Actions).
+  services:
+    - name: postgres:16.8
+      alias: postgres
+    - name: rabbitmq:3-management-alpine
+      alias: rabbitmq
+  variables:
+    DB_HOST: postgres
+    DB_PORT: "5432"
+    DB_NAME: resception_test
+    DB_USER: postgres
+    DB_PASSWORD: postgres
+    RABBITMQ_HOST: rabbitmq
+    RABBITMQ_PORT: "5672"
+    RABBITMQ_USERNAME: guest
+    RABBITMQ_PASSWORD: guest
+  script:
+    - cd reception-service/test
+    - chmod +x gradlew
+    - ./gradlew test --no-daemon
+
+code-quality:
+  stage: test
+  image: eclipse-temurin:17-jdk-alpine
+  # Sin "rules: changes": debe correr siempre (PR y push a main) para mantener
+  # actualizada la linea base de comparacion en SonarQube Cloud, igual que en
+  # ci-cd.yml.
+  variables:
+    SONAR_SCANNER_VERSION: "6.2.1.4610"
+    GIT_DEPTH: "0" # SonarQube necesita el historial completo, no un shallow clone
+  before_script:
+    - apk add --no-cache curl unzip
+    - curl -sSLo sonar-scanner.zip "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SONAR_SCANNER_VERSION}-linux-x64.zip"
+    - unzip -q sonar-scanner.zip
+    - export PATH="$PWD/sonar-scanner-${SONAR_SCANNER_VERSION}-linux-x64/bin:$PATH"
+  script:
+    - cd reception-service/test
+    - chmod +x gradlew
+    - ./gradlew compileJava --no-daemon
+    - cd ../..
+    - sonar-scanner -Dsonar.token="$SONAR_TOKEN"
+
+# ---------------- STAGE: build ----------------
+# Solo corre en la rama por defecto (main), nunca en un merge request,
+# igual que build-and-push en ci-cd.yml.
+
+build-orders-service:
+  stage: build
+  image: docker:27
+  services:
+    - docker:27-dind
+  # Depende unicamente de su propio test (no del de reception-service ni de
+  # code-quality) - pipeline tipo DAG, arranca en cuanto su dependencia real
+  # termina, sin esperar a todo el stage "test" completo.
+  needs:
+    - test-orders-service
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - orders-service/**/*
+  # resource_group: fuerza a que los builds a main corran en cola, nunca en
+  # paralelo ni cancelandose entre si - mismo criterio que cancel-in-progress
+  # en ci-cd.yml.
+  resource_group: main-deploy
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  script:
+    - docker build -t "$CI_REGISTRY_IMAGE/orders-service:$CI_COMMIT_SHORT_SHA" -t "$CI_REGISTRY_IMAGE/orders-service:latest" ./orders-service
+    - docker push "$CI_REGISTRY_IMAGE/orders-service:$CI_COMMIT_SHORT_SHA"
+    - docker push "$CI_REGISTRY_IMAGE/orders-service:latest"
+    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image
+      --severity CRITICAL --ignore-unfixed --exit-code 1
+      "$CI_REGISTRY_IMAGE/orders-service:$CI_COMMIT_SHORT_SHA"
+
+build-reception-service:
+  stage: build
+  image: docker:27
+  services:
+    - docker:27-dind
+  needs:
+    - test-reception-service
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      changes:
+        - reception-service/**/*
+  resource_group: main-deploy
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  script:
+    - docker build -t "$CI_REGISTRY_IMAGE/reception-service:$CI_COMMIT_SHORT_SHA" -t "$CI_REGISTRY_IMAGE/reception-service:latest" ./reception-service/test
+    - docker push "$CI_REGISTRY_IMAGE/reception-service:$CI_COMMIT_SHORT_SHA"
+    - docker push "$CI_REGISTRY_IMAGE/reception-service:latest"
+    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image
+      --severity CRITICAL --ignore-unfixed --exit-code 1
+      "$CI_REGISTRY_IMAGE/reception-service:$CI_COMMIT_SHORT_SHA"
