@@ -33,15 +33,21 @@ dependencies {
 	testCompileOnly 'org.projectlombok:lombok'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 	testAnnotationProcessor 'org.projectlombok:lombok'
+}
 
-	// CVE-2026-41293, CVE-2026-43512, CVE-2026-43515, CVE-2026-65182,
-	// CVE-2026-65905, CVE-2026-68525 (CRITICAL) en tomcat-embed-core 10.1.46,
-	// detectadas por Trivy en el pipeline. Se fija la dependencia transitiva
-	// a la version ya parchada, sin cambiar la version de Spring Boot.
-	constraints {
-		implementation('org.apache.tomcat.embed:tomcat-embed-core:10.1.55')
-		implementation('org.apache.tomcat.embed:tomcat-embed-el:10.1.55')
-		implementation('org.apache.tomcat.embed:tomcat-embed-websocket:10.1.55')
+// CVE-2026-41293, CVE-2026-43512, CVE-2026-43515, CVE-2026-65182,
+// CVE-2026-65905, CVE-2026-68525 (CRITICAL) en tomcat-embed-core 10.1.46,
+// detectadas por Trivy en el pipeline. El proyecto usa el plugin
+// io.spring.dependency-management, que gestiona las versiones via su propio
+// BOM - el bloque nativo de Gradle "constraints {}" NO tiene precedencia
+// sobre ese BOM (primer intento de fix que no funcio, confirmado por Trivy
+// en el pipeline). La forma correcta de overridear una version gestionada
+// por este plugin es su propia DSL "dependencyManagement":
+dependencyManagement {
+	dependencies {
+		dependency 'org.apache.tomcat.embed:tomcat-embed-core:10.1.55'
+		dependency 'org.apache.tomcat.embed:tomcat-embed-el:10.1.55'
+		dependency 'org.apache.tomcat.embed:tomcat-embed-websocket:10.1.55'
 	}
 }
 
