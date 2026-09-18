@@ -1,0 +1,41 @@
+# ADVERTENCIA: las credenciales (postgres.auth.*, rabbitmq.auth.*) quedan
+# como valores de ejemplo/desarrollo, versionados en texto plano a proposito
+# para que "helm install" funcione sin configuracion adicional en esta
+# prueba. En un despliegue real, estos valores NO deberian vivir aqui ni ser
+# conocidos por quien escribe el chart - se inyectarian en el momento del
+# despliegue (--set, un values file de secretos separado y no versionado, o
+# un gestor de secretos externo), gestionados por el equipo de plataforma,
+# nunca conocidos por el desarrollador del chart (principio de minimo
+# conocimiento necesario).
+postgres:
+  image:
+    repository: postgres
+    tag: "16.8"
+  auth:
+    user: postgres
+    password: postgres
+    database: resception_test
+  persistence:
+    size: 1Gi
+  service:
+    port: 5432
+
+redis:
+  image:
+    repository: redis
+    tag: "7-alpine"
+  persistence:
+    size: 1Gi
+  service:
+    port: 6379
+
+rabbitmq:
+  image:
+    repository: rabbitmq
+    tag: "3-management-alpine"
+  auth:
+    user: guest
+    password: guest
+  service:
+    port: 5672
+    managementPort: 15672

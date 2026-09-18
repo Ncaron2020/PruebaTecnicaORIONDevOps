@@ -1,0 +1,44 @@
+image:
+  repository: ghcr.io/ncaron2020/orders-service
+  tag: latest
+
+replicaCount: 1
+
+service:
+  port: 8080
+
+# Valores no sensibles (van al ConfigMap)
+env:
+  serverPort: "8080"
+  redisAddr: "redis:6379"
+  redisListKey: "events_list"
+  rabbitmqQueue: "events_queue"
+
+# ADVERTENCIA: igual que en charts/infra/values.yaml, estos valores quedan
+# como ejemplo/desarrollo, versionados a proposito para simplicidad de esta
+# prueba (decision de alcance, no un descuido). En una situacion empresarial
+# real, con infraestructura ya definida, se abordaria distinto - por ejemplo:
+#   (a) inyectando el valor en el momento del despliegue (--set, o un
+#       values file de secretos generado ahi mismo, nunca comiteado), o
+#   (b) el chart NO define el Secret en absoluto, solo lo referencia por
+#       nombre (secretRef) - el Secret se crea por un proceso aparte
+#       (manual, o sincronizado desde un gestor de secretos externo).
+#
+# Duplicado respecto a charts/infra/values.yaml (rabbitmq.auth.*): al ser
+# charts separados, no comparten values.yaml - deben coincidir a mano.
+rabbitmq:
+  host: rabbitmq
+  port: "5672"
+  user: guest
+  password: guest
+
+redis:
+  password: ""
+
+resources:
+  requests:
+    memory: "64Mi"
+    cpu: "50m"
+  limits:
+    memory: "128Mi"
+    cpu: "250m"

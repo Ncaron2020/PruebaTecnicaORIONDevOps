@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      # Mismo caso que postgres/redis: fijamos runAsUser explicito en vez de
+      # confiar en que la imagen lo declare por su cuenta. Este valor (999)
+      # se valida al desplegar - si esta mal, el pod fallara al arrancar con
+      # un error de permisos claro y facil de corregir.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+      containers:
+        - name: rabbitmq
+          image: "{{ .Values.rabbitmq.image.repository }}:{{ .Values.rabbitmq.image.tag }}"
+          ports:
+            - containerPort: 5672
+            - containerPort: {{ .Values.rabbitmq.service.managementPort }}
+          env:
+            - name: RABBITMQ_DEFAULT_USER
+              value: {{ .Values.rabbitmq.auth.user | quote }}
+            - name: RABBITMQ_DEFAULT_PASS
+              value: {{ .Values.rabbitmq.auth.password | quote }}
+          # RabbitMQ tarda ~23-25s en arrancar (confirmado en el pipeline:
+          # "Time to start RabbitMQ: 23389 ms"). Sin startupProbe, el
+          # livenessProbe con initialDelaySeconds:20 lo mataba justo antes
+          # de terminar de arrancar (falso positivo, SIGTERM confirmado en
+          # logs). El startupProbe protege la fase de arranque: mientras no
+          # pase, el liveness/readiness ni siquiera empiezan a evaluarse.
+          #
+          # timeoutSeconds explicito en los 3: el default de Kubernetes es
+          # 1s si no se especifica, y "rabbitmq-diagnostics" (corre sobre
+          # Erlang) a veces tarda mas de eso, sobre todo con varios pods
+          # compitiendo por CPU - confirmado en el pipeline con el error
+          # "command timed out... after 1s".
+          startupProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 12
+          readinessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"

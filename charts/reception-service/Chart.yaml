@@ -1,0 +1,6 @@
+apiVersion: v2
+name: reception-service
+description: Consumer (Java/Spring Boot) - consume eventos de RabbitMQ y los guarda en Postgres
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

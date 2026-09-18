@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      # La imagen oficial de postgres queda declarada como root en su metadata
+      # (el propio entrypoint hace el cambio a usuario postgres en tiempo de
+      # ejecucion) - por eso hay que fijar runAsUser explicito, "runAsNonRoot"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+      # El volumen del PVC pertenece a root por defecto. fsGroup da acceso de
+      # lectura/escritura por grupo, pero no permiso para hacer "chmod" (eso
+      # requiere ser el dueño). Este initContainer corre como root una sola
+      # vez, ajusta el dueño del volumen a 999, y termina - recien ahi el
+      # contenedor principal (no-root) puede operar sobre esa carpeta.
+      # Confirmado en el pipeline: sin esto, postgres queda en
+      # CrashLoopBackOff con "Operation not permitted" al inicializar.
+      initContainers:
+        - name: fix-permissions
+          image: busybox
+          command: ["sh", "-c", "chown -R 999:999 /var/lib/postgresql/data"]
+          # El pod hereda "runAsNonRoot: true" a todos sus contenedores por
+          # defecto - hay que sobreescribirlo explicitamente aqui tambien
+          # (no solo runAsUser: 0), o Kubernetes rechaza el contenedor por
+          # contradiccion ("debe ser no-root" + "usuario 0/root").
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+          volumeMounts:
+            - name: postgres-storage
+              mountPath: /var/lib/postgresql/data
+              subPath: data
+      containers:
+        - name: postgres
+          image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: {{ .Values.postgres.auth.user | quote }}
+            - name: POSTGRES_PASSWORD
+              value: {{ .Values.postgres.auth.password | quote }}
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.auth.database | quote }}
+          volumeMounts:
+            - name: postgres-storage
+              mountPath: /var/lib/postgresql/data
+              subPath: data
+          # timeoutSeconds explicito: el default de Kubernetes es 1s, y bajo
+          # contencion de CPU (varios pods compitiendo en el mismo nodo) un
+          # exec probe puede tardar mas que eso - confirmado como problema
+          # real en el probe de RabbitMQ durante este mismo despliegue.
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "{{ .Values.postgres.auth.user }}"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "{{ .Values.postgres.auth.user }}"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+      volumes:
+        - name: postgres-storage
+          persistentVolumeClaim:
+            claimName: postgres-pvc
