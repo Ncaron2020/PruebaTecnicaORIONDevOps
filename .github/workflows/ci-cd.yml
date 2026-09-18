@@ -1,0 +1,170 @@
+name: CI/CD
+
+# En Pull Request hacia main: solo build + test (gate de calidad, no publica nada).
+# En push/merge a main: build + test + build de imagen + scan de seguridad + push a GHCR.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  # Solo se cancelan corridas viejas en Pull Request (validacion sin efectos
+  # secundarios: solo importa el ultimo commit). En push a main NUNCA se
+  # cancela: cada merge debe construir y publicar su propia imagen, sin
+  # perder trazabilidad ni arriesgar un push a medias al registry.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test-orders-service:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.8"
+          cache-dependency-path: orders-service/go.sum
+
+      - name: go vet
+        working-directory: orders-service
+        run: go vet ./...
+
+      - name: go test
+        working-directory: orders-service
+        run: go test ./...
+
+  test-reception-service:
+    runs-on: ubuntu-latest
+    # reception-service usa @SpringBootTest: levanta el contexto completo de Spring,
+    # por lo que necesita Postgres y RabbitMQ reales disponibles durante el test,
+    # igual que en el docker-compose.yml local.
+    services:
+      postgres:
+        image: postgres:16.8
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: resception_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      rabbitmq:
+        image: rabbitmq:3-management-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: guest
+          RABBITMQ_DEFAULT_PASS: guest
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: gradlew ejecutable
+        working-directory: reception-service/test
+        run: chmod +x gradlew
+
+      - name: ./gradlew test
+        working-directory: reception-service/test
+        env:
+          DB_HOST: localhost
+          DB_PORT: "5432"
+          DB_NAME: resception_test
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          RABBITMQ_HOST: localhost
+          RABBITMQ_PORT: "5672"
+          RABBITMQ_USERNAME: guest
+          RABBITMQ_PASSWORD: guest
+        run: ./gradlew test --no-daemon
+
+  code-quality:
+    runs-on: ubuntu-latest
+    # Corre en paralelo con los jobs de test (PR y push a main), como parte
+    # del mismo "stage" de validacion. Actualiza tambien la linea base de
+    # SonarQube Cloud en cada push a main, usada para comparar el codigo
+    # nuevo de los proximos PRs.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # SonarQube necesita el historial completo, no un shallow clone
+
+      - name: Configurar Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Compilar clases de reception-service (para analisis de bytecode)
+        working-directory: reception-service/test
+        run: |
+          chmod +x gradlew
+          ./gradlew compileJava --no-daemon
+
+      - name: SonarQube Cloud Scan
+        uses: SonarSource/sonarqube-scan-action@v4
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  build-and-push:
+    needs: [test-orders-service, test-reception-service]
+    # Solo se construye y publica imagen en push/merge a main, nunca en un PR.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - name: orders-service
+            context: ./orders-service
+          - name: reception-service
+            context: ./reception-service/test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Propietario de la imagen en minusculas (requerido por GHCR)
+        run: echo "IMAGE_OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      - name: Login en GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build y push de ${{ matrix.name }}
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          tags: |
+            ghcr.io/${{ env.IMAGE_OWNER }}/${{ matrix.name }}:${{ github.sha }}
+            ghcr.io/${{ env.IMAGE_OWNER }}/${{ matrix.name }}:latest
+
+      - name: Trivy scan de ${{ matrix.name }}
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ghcr.io/${{ env.IMAGE_OWNER }}/${{ matrix.name }}:${{ github.sha }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
