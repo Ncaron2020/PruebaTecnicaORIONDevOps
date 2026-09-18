@@ -131,7 +131,9 @@ M–L
 
 **Ambigüedades:** no se especifica si se requiere autoescalado (HPA) ni Ingress.
 
-**Supuestos:** se define un chart de Helm por servicio propio (`orders-service`, `reception-service`). Para RabbitMQ/Redis/Postgres se evalúan charts oficiales (ej. Bitnami) en vez de reinventar manifiestos — decisión a justificar según tiempo disponible.
+**Supuestos y decisión tomada:** se define un chart de Helm por servicio propio (`orders-service`, `reception-service`), más un tercer chart propio (`infra`) para RabbitMQ/Redis/Postgres con manifiestos simples (`Deployment`/`Service`/`PVC`), en vez de traer charts oficiales de terceros (ej. Bitnami). Justificación: el foco de la evaluación son los dos servicios propios (Deployment, Service, ConfigMap, Secret, probes, seguridad) — escribir los manifiestos de infraestructura a mano demuestra ese conocimiento de forma más directa que importar un chart ya armado por alguien más. En un entorno de producción real con alta disponibilidad/backups/replicación de por medio, un Operator o chart maduro (Bitnami, o el oficial de cada proyecto) sería la recomendación — para el alcance de esta prueba, manifiestos propios son apropiados.
+
+**Clúster de prueba:** `kind` (Kubernetes in Docker) — corre como contenedores Docker en vez de una VM completa, arranca en segundos, y reutiliza el Docker Desktop que ya usa todo el proyecto, sin instalar un driver adicional.
 
 ### 2. Refinamiento
 
@@ -143,6 +145,12 @@ M–L
 
 **Estrategia operacional:** `resources.requests/limits` calibrados (directamente ligado al incidente de `RCA.md` — OOMKilled por límite insuficiente), `replicaCount >= 2` para disponibilidad, estrategia de `RollingUpdate`.
 
+**Persistencia — PVC no solo en Postgres:** inicialmente se planeó PVC únicamente para Postgres (la base de datos "obvia"). Al analizar el flujo completo, se identificó que **Redis también necesita PVC**: `orders-service` usa Redis como bitácora de todos los eventos recibidos (`RPush` a `events_list`, expuesto vía `GET /api/v1/events`), y mientras un evento espera sin ser consumido en RabbitMQ, existe simultáneamente en Redis y en RabbitMQ — si el pod de Redis se reinicia sin persistencia, esa copia se pierde. Combinado con el hallazgo de abajo (mensajes de RabbitMQ no marcados como persistentes), un reinicio de ambos pods en la ventana entre publicación y consumo podría perder el evento **sin dejar rastro en ningún lado**. Se agrega PVC también a Redis por esta razón.
+
+**Límite de esta solución — falta un ajuste a nivel de desarrollo:** dar persistencia a nivel de infraestructura (PVC en Redis y Postgres) garantiza que los **datos que ya se escribieron a disco** sobrevivan un reinicio de pod. Pero esto por sí solo **no es suficiente** para RabbitMQ: como se documenta abajo, los mensajes se publican sin `DeliveryMode: Persistent`, por lo que RabbitMQ los mantiene solo en memoria sin importar qué tan bien configuremos su almacenamiento a nivel de infraestructura — ese es un ajuste que debe hacerse en el código de `orders-service` (Go), fuera del alcance de esta HU por tratarse de código de aplicación, no de plataforma.
+
+**Precisión importante sobre qué protege realmente la persistencia de Redis:** Redis y RabbitMQ son sistemas completamente independientes, sin ninguna conexión entre sí en el código — no existe ningún mecanismo de reconciliación que detecte "este evento está en Redis pero nunca llegó a `reception-service`" y lo vuelva a publicar en RabbitMQ. Por lo tanto, la persistencia de Redis **preserva evidencia/bitácora para investigación manual posterior** (saber qué se recibió), pero **no recupera automáticamente** un evento que RabbitMQ haya perdido — esa recuperación real solo la da corregir `DeliveryMode: Persistent` en el origen. Ambos ajustes son complementarios, no sustitutos entre sí.
+
 **Consideraciones de seguridad:** `securityContext` con `runAsNonRoot: true` (coherente con las imágenes distroless ya construidas), `readOnlyRootFilesystem` donde sea viable, `capabilities: drop: [ALL]`, `allowPrivilegeEscalation: false`.
 
 ### 3. Descomposición Técnica
@@ -151,9 +159,10 @@ M–L
 |---|---|
 | Chart Helm `orders-service` (Deployment, Service, ConfigMap, Secret, probes) | M |
 | Chart Helm `reception-service` (ídem) | M |
+| Chart Helm `infra` (RabbitMQ, Redis, Postgres — Deployment/Service/PVC propios) | M |
+| PVC para Postgres y Redis | S |
 | `values.yaml` parametrizado por ambiente | S |
 | `securityContext` + resource requests/limits | S |
-| Decisión y documentación: infraestructura (RabbitMQ/Redis/Postgres) vía Helm chart oficial vs. gestionado externo | S |
 | Probes de liveness/readiness/startup en los charts | S |
 
 ### 4. Estimación total
@@ -163,6 +172,65 @@ L
 ### 5. Priorización
 
 **MVP:** Deployment + Service + ConfigMap + Secret + probes para ambos servicios propios. **Opcional:** HPA, Ingress, PodDisruptionBudget.
+
+### 6. Validación real y hallazgos operativos (chart `infra`)
+
+El chart `infra` (Postgres, Redis, RabbitMQ) se desplegó y probó en un clúster local real (`kind`), no solo se escribió a ciegas. Esa validación encontró 4 problemas reales que no eran evidentes solo leyendo el YAML — quedan documentados porque son justo el tipo de detalle operativo que distingue "un manifiesto que parece correcto" de "un manifiesto que realmente funciona":
+
+1. **Postgres en `CrashLoopBackOff` por permisos del volumen.** El PVC recién creado pertenece a `root` por defecto; `fsGroup` da acceso de lectura/escritura por grupo pero no autoriza `chmod` (eso requiere ser el dueño). El propio entrypoint de Postgres intenta corregir permisos de su directorio de datos y fallaba con `Operation not permitted`. **Fix:** un `initContainer` que corre como root una sola vez (`chown -R 999:999`) antes de que arranque el contenedor principal, no-root.
+
+2. **El `initContainer` fue rechazado por Kubernetes.** El pod hereda `runAsNonRoot: true` a todos sus contenedores por defecto, incluidos los `initContainers` — al pedirle `runAsUser: 0` (root) sin también overridear `runAsNonRoot: false` en ese contenedor puntual, Kubernetes lo rechazaba por contradicción ("debe ser no-root" + "usuario root" a la vez). **Fix:** `securityContext` propio en el `initContainer`, con `runAsNonRoot: false` explícito.
+
+3. **RabbitMQ reiniciándose en bucle (falso positivo del liveness probe).** Los logs confirmaron que RabbitMQ arranca correctamente en ~23-25s, pero el `livenessProbe` (con `initialDelaySeconds: 20`) lo evaluaba y mataba justo antes de que terminara de arrancar — un pod sano, muerto por una probe mal calibrada, no por un problema real de la aplicación. **Fix:** `startupProbe` dedicado a la fase de arranque (reintenta varias veces antes de darse por vencido); mientras no pase, `liveness`/`readiness` ni siquiera empiezan a evaluarse. Se aplicó también a Postgres/Redis por el mismo riesgo, aunque no llegaron a fallar en la práctica.
+
+4. **Probes fallando por timeout demasiado corto.** Kubernetes usa `timeoutSeconds: 1` por defecto si no se especifica — `rabbitmq-diagnostics` (corre sobre Erlang) a veces tardaba más de eso, sobre todo con varios pods compitiendo por CPU en el mismo nodo local. **Fix:** `timeoutSeconds: 5` explícito en los probes de los 3 servicios de `infra`.
+
+**Por qué esto importa más allá de "se corrigió un bug":** los hallazgos 3 y 4 son variantes directas de la misma lección del incidente en `RCA.md` — una probe/límite mal calibrado puede matar un proceso sano y generar una falla en cadena que parece "el servicio está roto" cuando en realidad el servicio nunca tuvo un problema real. Reforzó por qué las recomendaciones del RCA (calibrar límites y probes con datos reales, no con valores adivinados) aplican en la práctica, no solo en teoría.
+
+### 7. Chart `orders-service` — decisiones de configuración y secretos
+
+**Por qué `RABBITMQ_URL` completa va en el `Secret`, no en el `ConfigMap`:** `orders-service` espera una sola variable con formato `amqp://usuario:password@host:puerto/` — usuario y contraseña quedan incrustados en la misma cadena. Aunque host/puerto no son sensibles por sí solos, no se pueden separar del resto de la URL sin cambiar el código de la aplicación (fuera de alcance) — por lo tanto, la URL completa se trata como sensible y vive en el `Secret`, no en el `ConfigMap`.
+
+**Duplicación de datos entre `charts/infra` y `charts/orders-service`:** al ser charts de Helm separados (sin un chart "paraguas" que comparta `values.yaml` entre ellos), las credenciales de RabbitMQ (`user`/`password`) están declaradas en **dos lugares** — una vez en `charts/infra/values.yaml` (quien las define, vía `RABBITMQ_DEFAULT_USER`/`PASS`) y otra vez en `charts/orders-service/values.yaml` (quien las consume, deben coincidir manualmente). Es un trade-off real y consciente de la decisión de usar charts separados por servicio en vez de uno compartido — documentado, no oculto.
+
+**Credenciales versionadas en `values.yaml` — decisión de alcance, no un descuido.** Ambos `values.yaml` (`infra` y `orders-service`) llevan un comentario explícito señalando que, en una situación empresarial real con infraestructura ya definida, esto se abordaría distinto:
+- **(a)** inyectando el valor en el momento del despliegue (`--set`, o un values file de secretos generado ahí mismo por el pipeline, nunca comiteado), o
+- **(b)** el chart no define el `Secret` en absoluto, solo lo **referencia por nombre** (`secretRef`) — el `Secret` se crea por un proceso completamente aparte (manual, o sincronizado desde un gestor de secretos externo como Vault), sin que el desarrollador del chart llegue a ver ni gestionar el valor real.
+
+Un matiz importante discutido: llamar a un recurso `Secret` en Kubernetes **no lo hace automáticamente seguro en git** — el tipo `Secret` solo protege cómo Kubernetes lo almacena/controla el acceso **dentro del clúster** (base64 en `etcd`, RBAC), no de dónde viene el valor. Si ese valor sale de un `values.yaml` versionado, sigue estando expuesto en el historial de git sin importar que el recurso final se llame `Secret`.
+
+### 8. Validación real — charts `orders-service` y `reception-service`
+
+Ambos charts se desplegaron y probaron end-to-end contra el clúster `kind`, incluyendo el flujo completo de negocio (no solo "el pod arrancó"):
+
+- `orders-service`: conectó a Redis y RabbitMQ desde el arranque (sin reintentos ni errores), publicó un evento de prueba real (`POST /api/v1/events`), y se confirmó tanto en `GET /api/v1/events` (Redis) como directamente en la cola de RabbitMQ (`rabbitmqctl list_queues`).
+- `reception-service`: consumió automáticamente ese mismo evento en cuanto arrancó (sin que nadie lo disparara manualmente), lo persistió en Postgres, y se confirmó con una consulta SQL directa — reproduciendo exactamente el mismo flujo que ya habíamos validado en local con `docker-compose.yml` en HU-001, ahora sobre Kubernetes real.
+
+**Hallazgo adicional, específico de `reception-service`:** el `README.md` propio de `reception-service` lista `/actuator/health/startup` como endpoint disponible junto a `/liveness` y `/readiness`. Probado directamente (`curl` contra la IP del pod desde dentro del clúster), **`/actuator/health/startup` devuelve `404` real** — no es un problema de timing, el endpoint no existe con la configuración actual de `application.properties` (probablemente requeriría una configuración adicional de Spring Boot Actuator no presente en el código entregado). Como el `startupProbe` del chart dependía de ese endpoint, el pod quedaba permanentemente en `0/1 Ready`, sin llegar nunca a pasar. **Fix:** se cambió el `startupProbe` para usar `/actuator/health/readiness` en su lugar (sí funciona, confirmado con `200`), sin tocar código ni configuración de la aplicación — ajuste contenido enteramente en el chart de Helm.
+
+**Metodología de diagnóstico, para que quede como referencia:** el primer intento de probar los endpoints vía `kubectl port-forward` desde la máquina local dio `000` (sin conexión) para los 4 endpoints por igual — una pista de que el problema no era el endpoint puntual, sino la ruta de red usada para probar. Cambiar a un pod temporal *dentro* del clúster, apuntando primero al `Service` (también falló, porque el `Service` no enruta a pods que aún no están `Ready`) y finalmente directo a la **IP del pod** (bypasseando el `Service`), aisló el problema real: 3 de los 4 endpoints devolvían `200`, solo `/startup` daba `404`. Sin este orden de descarte, hubiera sido fácil confundir un problema de ruta de red con un problema de la aplicación.
+
+### 9. Evidencia de validación end-to-end vía Postman (post-corrección)
+
+Con el `startupProbe` ya corregido y los 5 pods (`orders-service`, `reception-service`, `postgres`, `redis`, `rabbitmq`) en `1/1 Running`, se repitió manualmente desde Postman la misma prueba end-to-end de HU-001 (antes hecha contra `docker-compose`), esta vez contra el clúster de Kubernetes real (vía `kubectl port-forward` a los `Service` de cada uno):
+
+1. `POST http://localhost:8080/api/v1/events` → `202 Accepted`, `{"status": "published & cached", ...}`.
+2. `GET http://localhost:8080/api/v1/events` → `200 OK`, `count: 2` — incluye el evento de esta prueba y el de la validación anterior (`k8s-test-01`), confirmando que Redis conserva el historial entre despliegues (PVC funcionando).
+3. `GET http://localhost:8081/api/v1/messages` → `200 OK` — ambos eventos aparecen persistidos en Postgres, cada uno con un UUID generado por `reception-service` (reproduce el hallazgo ya documentado: el `id` original no se conserva).
+
+Confirma que el comportamiento del sistema en Kubernetes es idéntico al validado en local con `docker-compose.yml` — la migración de plataforma no introdujo ninguna regresión funcional.
+
+### 10. Cierre de pendientes de MVP: `replicaCount` y `values.yaml` por ambiente
+
+Al revisar la historia contra su propio plan (sección 2 y 3), quedaron 2 puntos del MVP sin cerrar tras el despliegue inicial:
+
+- **`replicaCount >= 2`**: `orders-service` y `reception-service` quedaron con `replicaCount: 1` en la primera versión. Se corrigió a `2` en el `values.yaml` base de ambos — validado desplegando de verdad (no solo revisando el YAML): los 4 pods (2+2) quedaron `1/1 Running` sin problemas de recursos en el nodo único de `kind`.
+- **`values.yaml` parametrizado por ambiente**: se agregó `values-dev.yaml` en `orders-service` y `reception-service`, con `replicaCount: 1` y recursos más livianos para entornos locales/de un solo nodo (uso: `helm install ... -f values.yaml -f values-dev.yaml`, Helm aplica los archivos en orden y el último gana). El `values.yaml` base queda con la configuración apropiada para producción (`replicaCount: 2`). Validado con `helm template` comparando el renderizado con y sin el override — confirma `replicas: 2` sin override y `replicas: 1` con `values-dev.yaml`.
+- **Nota sobre `reception-service/values-dev.yaml`**: el límite de memoria en el override de desarrollo **no** se redujo tan agresivamente como en los demás — es el mismo worker analizado en `RCA.md`, donde `128Mi` causaba `OOMKilled` en bucle. Incluso en un ambiente "liviano", se mantiene bien por encima de ese valor problemático.
+
+De paso, se dejó explícita la estrategia `RollingUpdate` (con `maxUnavailable: 0`, `maxSurge: 1`) en ambos `Deployment` — ya era el comportamiento por defecto de Kubernetes, pero quedaba implícito; con `replicaCount: 2` ahora sí tiene un efecto visible (garantiza cero downtime real en cada actualización).
+
+Con esto, los 2 pendientes de MVP quedan cerrados — HU-003 queda completa en su alcance obligatorio.
 
 ---
 
@@ -341,3 +409,5 @@ Los primeros commits de la rama `feature/hu-001-containerization` usan un format
 - **`reception-service` no conserva el `id` original del evento** — genera un UUID nuevo al persistir en Postgres, descartando el `id` enviado por `orders-service`. Detectado durante la validación end-to-end de HU-001.
 - La columna `name` en `reception_data` tiene restricción `UNIQUE` — un segundo evento con el mismo texto de `message` fallaría al insertarse. Riesgo funcional a tener en cuenta si el volumen real de eventos incluye mensajes repetidos.
 - `go.mod` declarando una versión de Go que podía no estar disponible públicamente al momento del build — mitigado validando la imagen exacta antes de pinearla.
+- **`orders-service` publica en RabbitMQ sin `DeliveryMode: Persistent`** (`main.go`, función `publishEvent`) — el mensaje solo vive en memoria del broker, no se escribe a disco, sin importar qué tan robusta sea la configuración de almacenamiento de RabbitMQ a nivel de infraestructura. Si el pod de RabbitMQ se reinicia antes de que `reception-service` consuma el mensaje, se pierde. Detectado durante el análisis de persistencia de HU-003. Requiere un ajuste de código (agregar el flag al `amqp.Publishing`), fuera de alcance de las historias de infraestructura — documentado, no corregido.
+- **La lista `events_list` de Redis crece sin límite ni expiración** — `publishEvent` solo hace `RPush`, nunca hay un `LPop`/`LTrim`/`EXPIRE` en ningún lado del código. En un despliegue de larga duración, esto es consumo de memoria no acotado (Redis podría quedarse sin memoria) y hace que `GET /api/v1/events` sea cada vez más pesado, al traer siempre el historial completo. Además, como Redis y RabbitMQ no están conectados entre sí (no hay reconciliación automática), tener el evento registrado en Redis no garantiza que haya sido procesado por `reception-service` — solo sirve como bitácora para investigación manual, no como mecanismo de recuperación. Requiere ajuste de código (TTL, trim periódico, o límite de tamaño), fuera de alcance de las historias de infraestructura.

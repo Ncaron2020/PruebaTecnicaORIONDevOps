@@ -1,0 +1,6 @@
+apiVersion: v2
+name: orders-service
+description: Orders API (Go) - recibe eventos, los guarda en Redis y los publica en RabbitMQ
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

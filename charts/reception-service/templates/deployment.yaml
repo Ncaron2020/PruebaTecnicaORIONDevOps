@@ -1,0 +1,68 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reception-service
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: reception-service
+  template:
+    metadata:
+      labels:
+        app: reception-service
+    spec:
+      # Mismo UID que orders-service: distroless/java17-debian12:nonroot
+      # usa el mismo usuario "nonroot" estandar de Google (65532).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: reception-service
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: reception-service-config
+            - secretRef:
+                name: reception-service-secret
+          # El README de reception-service lista /actuator/health/startup
+          # como endpoint disponible, pero validado en el pipeline devuelve
+          # 404 real (no es timing, el endpoint no existe en esta config -
+          # requeriria configuracion adicional de Spring ausente en
+          # application.properties). Se usa /actuator/health/readiness
+          # tambien para el startupProbe: si valida confirmado en el
+          # despliegue.
+          startupProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 20
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            requests:
+              memory: {{ .Values.resources.requests.memory | quote }}
+              cpu: {{ .Values.resources.requests.cpu | quote }}
+            limits:
+              memory: {{ .Values.resources.limits.memory | quote }}
+              cpu: {{ .Values.resources.limits.cpu | quote }}

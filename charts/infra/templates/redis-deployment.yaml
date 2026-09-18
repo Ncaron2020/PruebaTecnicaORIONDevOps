@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+      containers:
+        - name: redis
+          image: "{{ .Values.redis.image.repository }}:{{ .Values.redis.image.tag }}"
+          ports:
+            - containerPort: 6379
+          # Redis ya guarda snapshots RDB en /data por defecto (config
+          # compilada de fabrica), pero con intervalos amplios. Este --save
+          # lo hace mas agresivo (cada 60s si hubo al menos 1 cambio) -
+          # reduce la ventana de perdida de datos ante un reinicio del pod.
+          args: ["--save", "60", "1"]
+          volumeMounts:
+            - name: redis-storage
+              mountPath: /data
+          # timeoutSeconds explicito por la misma razon que en postgres:
+          # el default de 1s de Kubernetes puede no alcanzar bajo contencion
+          # de CPU en el nodo.
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
+      volumes:
+        - name: redis-storage
+          persistentVolumeClaim:
+            claimName: redis-pvc

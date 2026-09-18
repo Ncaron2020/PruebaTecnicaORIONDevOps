@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders-service
+spec:
+  replicas: {{ .Values.replicaCount }}
+  # RollingUpdate ya es el default de Kubernetes, se deja explicito para
+  # que quede documentado. maxUnavailable:0 evita que se tumbe un pod viejo
+  # antes de que el nuevo este listo - con replicaCount:2, esto da cero
+  # downtime real en cada actualizacion.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: orders-service
+  template:
+    metadata:
+      labels:
+        app: orders-service
+    spec:
+      # 65532 es el UID estandar y documentado del usuario "nonroot" en las
+      # imagenes distroless de Google (gcr.io/distroless/*:nonroot) - el
+      # mismo USER que ya fijamos en el Dockerfile. A diferencia de los UID
+      # de postgres/redis/rabbitmq (que tuvimos que validar desplegando),
+      # este es un dato conocido y documentado, no una suposicion.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: orders-service
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: orders-service-config
+            - secretRef:
+                name: orders-service-secret
+          # httpGet, no exec: la imagen es distroless (sin shell), no hay
+          # forma de ejecutar un comando dentro del contenedor. httpGet no
+          # lo necesita - el kubelet hace la peticion HTTP desde fuera.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            requests:
+              memory: {{ .Values.resources.requests.memory | quote }}
+              cpu: {{ .Values.resources.requests.cpu | quote }}
+            limits:
+              memory: {{ .Values.resources.limits.memory | quote }}
+              cpu: {{ .Values.resources.limits.cpu | quote }}
