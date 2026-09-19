@@ -32,6 +32,13 @@ spec:
       containers:
         - name: orders-service
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          # Sin capabilities de Linux extra (el proceso no necesita ninguna:
+          # no abre puertos privilegiados, no maneja red raw, etc.) y sin
+          # posibilidad de escalar privilegios dentro del contenedor.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 8080
           envFrom:

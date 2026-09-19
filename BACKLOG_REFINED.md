@@ -271,6 +271,19 @@ S
 
 **MVP.**
 
+### 6. Estado de cierre
+
+Todo el MVP de esta historia quedó implementado como parte del trabajo de HU-003 (los charts de Helm son, en la práctica, donde vive la configuración y gestión de secretos):
+
+| Actividad planeada | Estado |
+|---|---|
+| `ConfigMap` con configuración no sensible | Hecho — `orders-service` y `reception-service`, cada uno con el suyo |
+| `Secret` con credenciales | Hecho — incluye la decisión documentada de por qué `RABBITMQ_URL` completa va en el `Secret` (embebe credenciales), no solo las partes sensibles |
+| `values.yaml` separado por ambiente | Hecho — `values-dev.yaml` en ambos servicios propios (ver HU-003, sección 10) |
+| Documentar política de no comitear secretos | Hecho — advertencia explícita en cada `values.yaml`, más la discusión completa de alternativas reales (inyección en despliegue, `secretRef` externo) en HU-003, sección 7 |
+
+No queda ningún pendiente de esta historia dentro de su alcance MVP.
+
 ---
 
 ## HU-005 — Resiliencia Operativa
@@ -309,6 +322,18 @@ S–M
 
 **MVP:** límites calibrados + réplicas + probes. **Opcional:** HPA, PDB.
 
+### 6. Estado de cierre
+
+| Actividad planeada | Estado |
+|---|---|
+| Calibrar `resources.requests/limits` (ligado al RCA) | Hecho — `reception-service` en particular usa el límite directamente informado por el análisis del incidente en `RCA.md` (no un valor arbitrario) |
+| `replicaCount >= 2` en ambos servicios | Hecho (HU-003, sección 10) |
+| Ajustar thresholds/timeouts de los probes | Hecho, y más a fondo de lo planeado originalmente — el despliegue real contra `kind` encontró y corrigió 4 problemas de calibración de probes que no eran evidentes solo leyendo el YAML (`startupProbe` faltante en RabbitMQ, `timeoutSeconds` por defecto insuficiente, endpoint de Actuator inexistente en `reception-service`). Ver HU-003, secciones 6 y 8, para el detalle completo con evidencia de logs |
+| (Opcional) HPA basado en CPU/memoria | No implementado — queda fuera de alcance por tiempo, marcado como opcional desde la priorización original |
+| (Opcional) `PodDisruptionBudget` | No implementado — mismo motivo |
+
+El MVP de esta historia queda completo. Lo opcional (HPA, PDB) se deja documentado como mejora futura, priorizando el tiempo restante en HU-007/HU-008.
+
 ---
 
 ## HU-006 — Análisis de Incidentes
@@ -345,6 +370,18 @@ M
 
 **Opcional**, tal como está marcada en `BACKLOG.md`.
 
+### 6. Implementación y validación real
+
+Se implementaron ambas actividades del MVP de esta historia (opcional, pero completada dado el tiempo disponible):
+
+**`capabilities: drop: [ALL]` + `allowPrivilegeEscalation: false`** en los 5 contenedores (`orders-service`, `reception-service`, `postgres`, `redis`, `rabbitmq`). Validado con despliegue real: el `initContainer` de Postgres (el único que corre como root, ya justificado en HU-003) inicialmente falló con `chown -R`: solo la capability `CHOWN` no alcanzaba — `Permission denied` al intentar recorrer una carpeta con permisos restrictivos dejados por Postgres en una corrida previa. **Fix:** se agregó también `DAC_OVERRIDE` (permite a root atravesar/leer directorios sin importar sus permisos). El resto de contenedores (que no corren como root) no necesitaron ninguna capability agregada — `drop: [ALL]` sin más.
+
+**`NetworkPolicy`** para Postgres, Redis y RabbitMQ (`charts/infra/templates/networkpolicy.yaml`) — cada uno solo acepta tráfico de ingreso desde los pods que realmente lo necesitan (`orders-service` → Redis/RabbitMQ; `reception-service` → Postgres/RabbitMQ), bloqueando todo lo demás por defecto (en Kubernetes, un pod seleccionado por al menos una `NetworkPolicy` pasa a "deny" implícito para lo no permitido explícitamente).
+
+**Validación real, no solo el YAML aplicado:** existía la duda concreta de si el CNI por defecto de `kind` (`kindnet`) soporta hacer cumplir `NetworkPolicy` — no todos los CNI lo hacen. Se probó con un pod temporal sin los labels autorizados intentando conectar a Postgres/Redis: **`Connection timed out`** en ambos, confirmando que sí se aplica de verdad en este clúster. Se confirmó también que el tráfico legítimo (`orders-service`/`reception-service`) siguió funcionando sin interrupción (`/health` en `200` consistente, que depende de la conectividad real a Redis/RabbitMQ).
+
+**Fuera de alcance, documentado como mejora futura:** mTLS/service mesh (ya marcado como XL desde la descomposición original).
+
 ---
 
 ## HU-008 — Observabilidad (Opcional)
@@ -375,6 +412,30 @@ S (documentación) – L (implementación completa)
 ### 5. Priorización
 
 **Opcional / mejora futura** — dado el plazo de 2 días de la prueba, se prioriza documentar la estrategia sobre desplegar el stack completo.
+
+### 6. Estrategia de Observabilidad Recomendada (documentación completa)
+
+Todo lo siguiente es observabilidad **de plataforma** — no requiere tocar código de `orders-service`/`reception-service`, coherente con la decisión ya tomada en el Análisis.
+
+**Stack recomendado:** `kube-prometheus-stack` (Prometheus + Grafana + Alertmanager), instalable vía Helm en un solo comando. Es el estándar de facto para observabilidad de Kubernetes — no se eligió una alternativa más liviana porque el volumen de métricas de este proyecto no lo justifica ni en un sentido ni en el otro; se prioriza la herramienta más documentada y con mayor soporte de la comunidad.
+
+**Hallazgo que reduce el esfuerzo de implementación:** revisando los logs reales de RabbitMQ durante el despliegue de HU-003, se confirmó que el plugin `rabbitmq_prometheus` **ya viene activo por defecto** en la imagen `rabbitmq:3-management-alpine` que usamos (`"Prometheus metrics: HTTP (non-TLS) listener started on port 15692"`, visible en cualquier log de arranque del pod). Esto significa que RabbitMQ ya expone sus métricas en formato Prometheus sin configuración adicional — solo faltaría que un Prometheus real las recolecte (`ServiceMonitor` o scrape config apuntando al puerto `15692`).
+
+**Qué monitorear, priorizado por relación directa con el incidente de `RCA.md`:**
+
+| Métrica | Por qué (ligado al RCA) |
+|---|---|
+| Uso de memoria del pod vs. su `limit` (`> 80%`) | Habría anticipado el `OOMKilled` **antes** de que ocurriera, no después — la recomendación más importante del RCA |
+| `restart count` por pod en ventana corta (ej. `> 3` en 10 min) | Señal directa de un crash loop en curso — en el incidente ya iba en 14 reinicios sin alerta |
+| Profundidad de la cola `events_queue` en RabbitMQ (`> 1.000` mensajes) | Detecta la acumulación temprano — el incidente llegó a 12.500 antes de notarse |
+| Número de `consumers` activos en la cola (`< 1`) | Detecta directamente que `reception-service` dejó de consumir, causa raíz del incidente |
+| Memory alarm de RabbitMQ (métrica nativa del plugin de management) | Confirma o descarta en tiempo real la Hipótesis 3 del RCA (RabbitMQ bloqueando publishers por presión de memoria) |
+
+**Alertas sugeridas** (`Alertmanager`, o el mecanismo de notificación que ya use el equipo — Slack/email/PagerDuty): una por cada fila de la tabla anterior, con el pod/cola correspondiente. La de "memoria > 80%" y "consumers < 1" son las de mayor prioridad — ambas habrían detectado el incidente del RCA en minutos, no cuando ya era crítico.
+
+**Dashboard de correlación:** un solo panel de Grafana con memoria del worker + profundidad de cola + restart count lado a lado — exactamente la recomendación que ya se documentó en `RCA.md`, para que una falla en cadena como la del incidente sea diagnosticable de un vistazo, no reconstruyendo la secuencia después del hecho revisando logs por separado.
+
+**Qué no se implementó y por qué:** desplegar el stack completo (`L`, según la estimación original) no se priorizó frente a completar el resto del alcance obligatorio de la prueba en el tiempo disponible. La estrategia queda completamente especificada y lista para implementar por cualquiera que continúe este trabajo, sin necesitar más análisis previo.
 
 ---
 
