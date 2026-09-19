@@ -65,3 +65,17 @@ spec:
           port: 5672
         - protocol: TCP
           port: 15672
+    # Puerto de metricas Prometheus (plugin rabbitmq_prometheus, activo por
+    # defecto - ver HU-008). Sin esta regla, cualquier Prometheus real que
+    # se despliegue despues quedaria bloqueado por esta misma politica,
+    # confirmado en la practica durante la validacion de HU-008: el scrape
+    # fallaba con "context deadline exceeded" hasta agregar esto. Cualquier
+    # pod etiquetado "monitoring: true" (convencion, no depende de un stack
+    # especifico) puede leer metricas, nada mas.
+    - from:
+        - podSelector:
+            matchLabels:
+              monitoring: "true"
+      ports:
+        - protocol: TCP
+          port: 15692
