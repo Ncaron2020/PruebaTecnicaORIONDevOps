@@ -13,3 +13,13 @@ spec:
     - name: management
       port: {{ .Values.rabbitmq.service.managementPort }}
       targetPort: {{ .Values.rabbitmq.service.managementPort }}
+    # Puerto de metricas Prometheus (plugin rabbitmq_prometheus). Sin esto
+    # en el Service, conectarse a rabbitmq:15692 falla igual que si
+    # estuviera bloqueado por NetworkPolicy - un Service solo reenvia a los
+    # puertos que declara explicitamente, independiente de si el contenedor
+    # ya escucha ahi. Confirmado como causa real durante la validacion de
+    # HU-008 (se descarto primero, incorrectamente, un problema de
+    # NetworkPolicy).
+    - name: metrics
+      port: 15692
+      targetPort: 15692
