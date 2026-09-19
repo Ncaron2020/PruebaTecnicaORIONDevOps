@@ -34,9 +34,19 @@ spec:
           # defecto - hay que sobreescribirlo explicitamente aqui tambien
           # (no solo runAsUser: 0), o Kubernetes rechaza el contenedor por
           # contradiccion ("debe ser no-root" + "usuario 0/root").
+          # Incluso corriendo como root, se limita a las capabilities minimas
+          # necesarias en vez de dejarle el set completo por defecto. CHOWN
+          # sola no alcanzo (confirmado en el pipeline: "Permission denied"
+          # al intentar recorrer la carpeta) - "chown -R" necesita tambien
+          # DAC_OVERRIDE para poder leer/atravesar directorios con permisos
+          # restrictivos que Postgres ya haya dejado de una corrida previa.
           securityContext:
             runAsNonRoot: false
             runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "DAC_OVERRIDE"]
           volumeMounts:
             - name: postgres-storage
               mountPath: /var/lib/postgresql/data
@@ -44,6 +54,10 @@ spec:
       containers:
         - name: postgres
           image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 5432
           env:
