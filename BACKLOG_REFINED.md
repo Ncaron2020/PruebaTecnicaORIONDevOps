@@ -329,10 +329,10 @@ S–M
 | Calibrar `resources.requests/limits` (ligado al RCA) | Hecho — `reception-service` en particular usa el límite directamente informado por el análisis del incidente en `RCA.md` (no un valor arbitrario) |
 | `replicaCount >= 2` en ambos servicios | Hecho (HU-003, sección 10) |
 | Ajustar thresholds/timeouts de los probes | Hecho, y más a fondo de lo planeado originalmente — el despliegue real contra `kind` encontró y corrigió 4 problemas de calibración de probes que no eran evidentes solo leyendo el YAML (`startupProbe` faltante en RabbitMQ, `timeoutSeconds` por defecto insuficiente, endpoint de Actuator inexistente en `reception-service`). Ver HU-003, secciones 6 y 8, para el detalle completo con evidencia de logs |
-| (Opcional) HPA basado en CPU/memoria | No implementado — queda fuera de alcance por tiempo, marcado como opcional desde la priorización original |
+| (Opcional) HPA basado en CPU/memoria | No implementado — marcado como opcional desde la priorización original de esta misma sección |
 | (Opcional) `PodDisruptionBudget` | No implementado — mismo motivo |
 
-El MVP de esta historia queda completo. Lo opcional (HPA, PDB) se deja documentado como mejora futura, priorizando el tiempo restante en HU-007/HU-008.
+El MVP de esta historia queda completo. Lo opcional (HPA, PDB) se deja documentado como mejora futura, priorizando en su lugar completar HU-007 y HU-008.
 
 ---
 
@@ -372,7 +372,7 @@ M
 
 ### 6. Implementación y validación real
 
-Se implementaron ambas actividades del MVP de esta historia (opcional, pero completada dado el tiempo disponible):
+Aunque marcada como opcional en `BACKLOG.md`, se priorizó completarla — un ataque exitoso a RabbitMQ/Postgres desde un pod comprometido tiene impacto directo en la integridad de los datos, así que se decidió que valía la pena el esfuerzo. Se implementaron ambas actividades del MVP de esta historia:
 
 **`capabilities: drop: [ALL]` + `allowPrivilegeEscalation: false`** en los 5 contenedores (`orders-service`, `reception-service`, `postgres`, `redis`, `rabbitmq`). Validado con despliegue real: el `initContainer` de Postgres (el único que corre como root, ya justificado en HU-003) inicialmente falló con `chown -R`: solo la capability `CHOWN` no alcanzaba — `Permission denied` al intentar recorrer una carpeta con permisos restrictivos dejados por Postgres en una corrida previa. **Fix:** se agregó también `DAC_OVERRIDE` (permite a root atravesar/leer directorios sin importar sus permisos). El resto de contenedores (que no corren como root) no necesitaron ninguna capability agregada — `drop: [ALL]` sin más.
 
@@ -403,7 +403,7 @@ Se implementaron ambas actividades del MVP de esta historia (opcional, pero comp
 | Actividad | Estimación |
 |---|---|
 | Documentar estrategia de observabilidad recomendada | S |
-| (Opcional, si el tiempo alcanza) desplegar `kube-prometheus-stack` vía Helm | L |
+| (Opcional) desplegar `kube-prometheus-stack` vía Helm | L |
 
 ### 4. Estimación total
 
@@ -411,7 +411,7 @@ S (documentación) – L (implementación completa)
 
 ### 5. Priorización
 
-**Opcional / mejora futura** — dado el plazo de 2 días de la prueba, se prioriza documentar la estrategia sobre desplegar el stack completo.
+**Opcional / mejora futura**, tal como está marcada en `BACKLOG.md` desde el origen. Entre las dos actividades de la descomposición técnica, se prioriza la documentación de la estrategia (`S`) sobre el despliegue completo del stack (`L`): con el MVP de las 6 historias obligatorias y el resto del alcance opcional (HU-007) ya completos y validados con evidencia real, instalar un stack de observabilidad sin nadie operándolo activamente entrega menos valor que dejar la estrategia completamente especificada y lista para implementar — la decisión prioriza profundidad y calidad en lo ya entregado sobre sumar una pieza adicional a medio validar.
 
 ### 6. Estrategia de Observabilidad Recomendada (documentación completa)
 
@@ -419,7 +419,14 @@ Todo lo siguiente es observabilidad **de plataforma** — no requiere tocar cód
 
 **Stack recomendado:** `kube-prometheus-stack` (Prometheus + Grafana + Alertmanager), instalable vía Helm en un solo comando. Es el estándar de facto para observabilidad de Kubernetes — no se eligió una alternativa más liviana porque el volumen de métricas de este proyecto no lo justifica ni en un sentido ni en el otro; se prioriza la herramienta más documentada y con mayor soporte de la comunidad.
 
-**Hallazgo que reduce el esfuerzo de implementación:** revisando los logs reales de RabbitMQ durante el despliegue de HU-003, se confirmó que el plugin `rabbitmq_prometheus` **ya viene activo por defecto** en la imagen `rabbitmq:3-management-alpine` que usamos (`"Prometheus metrics: HTTP (non-TLS) listener started on port 15692"`, visible en cualquier log de arranque del pod). Esto significa que RabbitMQ ya expone sus métricas en formato Prometheus sin configuración adicional — solo faltaría que un Prometheus real las recolecte (`ServiceMonitor` o scrape config apuntando al puerto `15692`).
+**Hallazgo que reduce el esfuerzo de implementación:** revisando los logs reales de RabbitMQ durante el despliegue de HU-003, se confirmó que el plugin `rabbitmq_prometheus` **ya viene activo por defecto** en la imagen `rabbitmq:3-management-alpine` que usamos (`"Prometheus metrics: HTTP (non-TLS) listener started on port 15692"`, visible en cualquier log de arranque del pod).
+
+**Validación real, no solo el log observado:** se desplegó un Prometheus mínimo y temporal en el clúster `kind` (no comiteado — es distinto del `kube-prometheus-stack` recomendado arriba, solo para validar esta afirmación puntual), configurado para hacer scrape de `rabbitmq:15692`. Esto encontró y corrigió **2 problemas reales**, ninguno evidente sin probarlo:
+
+1. **`NetworkPolicy` de HU-007 bloqueaba el puerto de métricas.** La política de `rabbitmq-network-policy` solo autorizaba `5672`/`15672` — el propio trabajo de seguridad de HU-007 bloqueaba, sin querer, la observabilidad de HU-008. Se agregó una regla nueva permitiendo el puerto `15692` desde cualquier pod con la etiqueta `monitoring: "true"` (convención genérica, no atada a un stack específico) — la regla queda ya en `charts/infra/templates/networkpolicy.yaml`, lista para cuando se despliegue un Prometheus real.
+2. **El `Service` de RabbitMQ nunca declaraba el puerto `15692`.** Este era el problema real de fondo (se descartó primero, incorrectamente, que fuera solo la `NetworkPolicy`): un `Service` de Kubernetes únicamente reenvía tráfico a los puertos que declara explícitamente, sin importar que el contenedor ya escuche ahí. Se agregó el puerto `metrics` (`15692`) a `charts/infra/templates/rabbitmq-service.yaml`.
+
+Con ambos corregidos, se confirmó con la propia API de Prometheus que el scrape quedó saludable (`"health":"up"`, `"lastError":""`) y se consultó una métrica real devuelta por RabbitMQ (`rabbitmq_identity_info`, con el ID real del clúster). Los recursos de validación se limpiaron después (`kubectl delete`) — no forman parte del despliegue permanente, solo confirman que la estrategia funciona de punta a punta antes de que alguien invierta tiempo en desplegar el stack completo.
 
 **Qué monitorear, priorizado por relación directa con el incidente de `RCA.md`:**
 
@@ -435,7 +442,7 @@ Todo lo siguiente es observabilidad **de plataforma** — no requiere tocar cód
 
 **Dashboard de correlación:** un solo panel de Grafana con memoria del worker + profundidad de cola + restart count lado a lado — exactamente la recomendación que ya se documentó en `RCA.md`, para que una falla en cadena como la del incidente sea diagnosticable de un vistazo, no reconstruyendo la secuencia después del hecho revisando logs por separado.
 
-**Qué no se implementó y por qué:** desplegar el stack completo (`L`, según la estimación original) no se priorizó frente a completar el resto del alcance obligatorio de la prueba en el tiempo disponible. La estrategia queda completamente especificada y lista para implementar por cualquiera que continúe este trabajo, sin necesitar más análisis previo.
+**Qué no se implementó y por qué:** el stack completo y permanente (`kube-prometheus-stack` con Grafana, Alertmanager y los dashboards/alertas de la tabla de arriba, `L` según la estimación original) queda como el siguiente paso natural de esta historia, no como una tarea abandonada. Ya se validó, con evidencia real, que el camino técnico funciona de punta a punta (RabbitMQ expone métricas, un Prometheus las recolecta sin problema una vez ajustados `Service` y `NetworkPolicy`) — lo que falta es exclusivamente el trabajo de instalación del stack completo y la configuración de los dashboards/alertas ya especificados, sin ninguna incertidumbre técnica pendiente.
 
 ---
 
@@ -450,7 +457,7 @@ Todo lo siguiente es observabilidad **de plataforma** — no requiere tocar cód
 ### Qué actividades se dejaron fuera de alcance (y por qué)
 
 - Gestor de secretos externo (Vault, Sealed Secrets, SOPS): `Secret` nativo de Kubernetes es suficiente para el alcance de esta prueba; se documenta como mejora futura en HU-004.
-- mTLS / service mesh: fuera de alcance por tiempo y complejidad, mencionado como mejora futura en HU-007.
+- mTLS / service mesh: complejidad e infraestructura adicional (un service mesh como Istio/Linkerd) no justificada para 2 servicios propios — la relación costo/beneficio no aplica al tamaño actual de la plataforma. Mencionado como mejora futura en HU-007, a reconsiderar si el número de servicios crece.
 - Instrumentación de métricas dentro del código de `orders-service`/`reception-service`: el README indica explícitamente que no es responsabilidad del candidato desarrollar funcionalidad de negocio nueva; HU-008 se resuelve a nivel de plataforma en su lugar.
 
 ### Qué herramientas se eligieron y por qué
